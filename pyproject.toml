@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pokervision-ai-coach"
+version = "0.1.0"
+description = "Academia offline de Texas Hold'em — MVP Cash Game"
+requires-python = ">=3.11"
+dependencies = ["PySide6>=6.8,<7", "pydantic>=2,<3"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10"]
+fast = ["eval7>=0.1.10"]
+
+[project.scripts]
+pokervision = "pokervision.ui:main"
+
+[tool.setuptools.packages.find]
+include = ["pokervision*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
