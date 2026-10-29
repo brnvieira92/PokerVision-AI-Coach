@@ -183,7 +183,7 @@ def test_storage_migration_reopen(tmp_path):
     repo = Repository(path)
     assert repo.stats() == (1,1)
     assert repo.hands()[0][3]['board'] == t.board
-    assert repo.db.execute('PRAGMA user_version').fetchone()[0] == 1
+    assert repo.db.execute('PRAGMA user_version').fetchone()[0] == 3
     repo.close()
 
 
