@@ -9,11 +9,12 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .cards import DECK, RANKS, evaluate, five, LABELS, validate
 from .education import cards_text
 from .math_engine import pot_odds
-from .ranges import hand_class
+from .ranges import hand_class,RESTRICTED,INTERMEDIATE
 
-Topic = Literal['combinations','price','actions','position','ranges']
+Topic = Literal['combinations','price','actions','position','ranges','preflop','blinds','draws']
 TOPICS = {'combinations':'Combinações vencedoras', 'price':'Preço para continuar',
-          'actions':'Apostas e botões', 'position':'Ordem de jogar', 'ranges':'Mãos iniciais e conjuntos'}
+          'actions':'Apostas e botões', 'position':'Ordem de jogar', 'ranges':'Mãos iniciais e conjuntos', 'preflop':'Situações antes das cartas da mesa',
+          'blinds':'Responder à aposta na posição obrigatória maior', 'draws':'Possibilidades de completar um flush'}
 
 
 class Choice(BaseModel):
@@ -145,6 +146,56 @@ class ExerciseFactory:
                  'Duas letras iguais indicam um par. Para valores diferentes, s significa mesmo naipe e o significa naipes diferentes.',
                  'Uma classe agrupa mãos parecidas: AKs inclui Ás e Rei de qualquer um dos quatro naipes, desde que ambos tenham o mesmo naipe.',
                  'Saber a classe não diz sozinho qual ação tomar. A posição, as apostas anteriores e os adversários também mudam a situação.'],hole=hole)
+        if topic=='preflop':
+            button=self.rng.choice([False,True])
+            selection=INTERMEDIATE if button else RESTRICTED
+            # Equilibra cenários incluídos e excluídos do conjunto, sem ajustar cartas da mesa jogável.
+            included=self.rng.choice([False,True])
+            pool=[pair for pair in combinations(DECK,2) if (hand_class(pair) in selection)==included]
+            hole=tuple(self.rng.choice(pool))
+            label=hand_class(hole)
+            example=', '.join(sorted(selection))
+            return self._exercise(topic,
+                ('Você está no botão' if button else 'Você é o primeiro a agir numa mesa de seis')+
+                f', antes das cartas da mesa, com 100 vezes a aposta obrigatória maior em fichas. Ninguém entrou na mão. '
+                f'Regra deste treino: aumentar apenas com as classes {example}; desistir das outras. '
+                f'Com {cards_text(hole)} ({label}), qual opção segue essa regra? '
+                'É um exemplo didático, não uma recomendação ótima para toda partida.',
+                [('raise','Aumentar segundo a regra do treino'),('fold','Desistir segundo a regra do treino'),
+                 ('certainty','Apostar tudo porque a vitória está garantida')], 'raise' if included else 'fold',
+                [f'A classe da sua mão é {label}. Ela '+('está' if included else 'não está')+' no conjunto explicitamente indicado.',
+                 'Neste exercício seguimos uma regra informada, por isso há um gabarito. O conjunto não veio de um solver e não prova qual jogada teria maior valor numa partida.',
+                 'Depois que alguém aumenta, a situação muda: não aplique automaticamente um conjunto de primeira aposta para responder a aumentos.',
+                 'Estar no botão permite observar mais ações depois das cartas da mesa; ser o primeiro deixa mais adversários para agir. Nenhuma dessas posições garante vitória.'],hole=hole)
+        if topic=='blinds':
+            big=self.rng.choice([2,4,10])
+            small=big//2
+            target=big*self.rng.choice([2,3,4])
+            cost=target-big
+            pot=target+big+small
+            hole=tuple(self.rng.sample(DECK,2))
+            return self._exercise(topic,
+                f'Você colocou a aposta obrigatória maior de {big} fichas. Um adversário aumentou para um total de {target}. '
+                f'Todos os outros desistiram; a aposta menor deixou {small} no centro. Há {pot} fichas no pote. '
+                'Você tem saldo suficiente. Quanto precisa acrescentar para acompanhar?',
+                [('cost',f'{cost} fichas'),('total',f'{target} fichas'),('free','Nada: já pagou a aposta obrigatória')], 'cost',
+                [f'O total exigido é {target}. Você já colocou {big}, então faltam {target} − {big} = {cost} fichas.',
+                 f'Depois de acompanhar, o pote seria {pot+cost}. O preço simplificado é {cost} ÷ {pot+cost} = {pot_odds(pot,cost):.1%}, sem taxas ou apostas futuras.',
+                 'Ter colocado a aposta obrigatória não obriga você a continuar. Ela já está no pote; a nova decisão é se vale colocar as fichas que faltam.',
+                 'O enunciado pergunta o custo, não se pagar é a melhor decisão. Para julgar isso faltam hipóteses sobre a mão adversária e as apostas futuras.'],hole=hole)
+        if topic=='draws':
+            suit=self.rng.choice('cdhs')
+            other=next(s for s in 'cdhs' if s!=suit)
+            hole=('A'+suit,'K'+suit)
+            board=('Q'+suit,'7'+suit,'2'+other)
+            return self._exercise(topic,
+                'Você tem quatro cartas do mesmo naipe entre suas cartas e as três cartas da mesa. '
+                'Nenhuma carta dos adversários é conhecida. Quantas das 47 cartas desconhecidas completariam cinco desse naipe na próxima carta?',
+                [('nine','9 cartas'),('four','4 cartas'),('thirteen','13 cartas')], 'nine',
+                ['Cada naipe tem 13 cartas. Você já conhece quatro desse naipe, então restam 13 − 4 = 9.',
+                 'Há 52 − 5 = 47 cartas desconhecidas; as cartas escondidas dos outros jogadores fazem parte do que você não conhece.',
+                 f'A chance de completar o naipe na próxima carta é 9 ÷ 47 = {9/47:.1%}. A pergunta trata só da próxima carta, não das duas restantes.',
+                 'Completar um flush significa ter cinco cartas do mesmo naipe. Ainda pode perder para uma combinação maior: chance de completar não é chance de vencer nem equity.'],hole=hole,board=board)
         raise ValueError('Assunto desconhecido')
 
     def price(self, pot, call, source_decision_id=None):

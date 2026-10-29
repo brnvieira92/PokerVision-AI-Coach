@@ -2,7 +2,8 @@
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (QWidget,QVBoxLayout,QHBoxLayout,QLabel,QPushButton,QComboBox,
-    QRadioButton,QButtonGroup,QTextBrowser,QTableWidget,QTableWidgetItem,QHeaderView,QAbstractItemView)
+    QRadioButton,QButtonGroup,QTextBrowser,QTableWidget,QTableWidgetItem,QHeaderView,QAbstractItemView,QScrollArea)
+from .study import compare_periods
 from .training import ExerciseFactory,TOPICS,topic_progress,recommend_topic
 from .review import CardsCanvas
 from .ranges import DESC,PRESETS,POSITION_GUIDE,matrix_class,combo_count
@@ -16,7 +17,13 @@ class TrainingPanel(QWidget):
         self.exercise=None
         self.answered=False
         self.access_allowed=None
-        lay=QVBoxLayout(self)
+        outer=QVBoxLayout(self)
+        self.scroll=QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        content=QWidget()
+        lay=QVBoxLayout(content)
+        self.scroll.setWidget(content)
+        outer.addWidget(self.scroll)
         lay.addWidget(QLabel('TREINAMENTO • PRATIQUE, ENTENDA E REPITA'))
         intro=QLabel('Responda uma pergunta por vez. A correção explica a conta ou a regra. '
                      'O progresso considera sua primeira resposta; depois da correção, gere um novo exercício.')
@@ -49,6 +56,7 @@ class TrainingPanel(QWidget):
         self.submit.clicked.connect(self.answer)
         lay.addWidget(self.submit)
         self.feedback=QTextBrowser()
+        self.feedback.setMinimumHeight(200)
         lay.addWidget(self.feedback,1)
         self.refresh_access()
 
@@ -92,6 +100,7 @@ class TrainingPanel(QWidget):
         self.canvas.setVisible(show)
         self.canvas.set_cards(exercise.hole,exercise.board,exercise.villain)
         self.refresh_access()
+        self.scroll.verticalScrollBar().setValue(0)
 
     def new_exercise(self):
         if not self.window.can_study():
@@ -118,6 +127,7 @@ class TrainingPanel(QWidget):
             f'\n\nSua resposta: {feedback.chosen}\nResposta correta: {feedback.expected}\n\n'+feedback.explanation)
         self.refresh_access()
         self.window.progress_panel.reload()
+        self.scroll.ensureWidgetVisible(self.feedback)
 
 
 class ProgressPanel(QWidget):
@@ -130,17 +140,24 @@ class ProgressPanel(QWidget):
         self.summary.setWordWrap(True)
         self.summary.setStyleSheet('font-size:18px;padding:12px;')
         lay.addWidget(self.summary)
-        self.table=QTableWidget(len(TOPICS),5)
-        self.table.setHorizontalHeaderLabels(['Assunto','Respostas','Acertos','Percentual','Faixa aproximada (95%)'])
+        self.period=QComboBox()
+        for title,days in [('Todo o histórico',None),('Últimos 7 dias versus os 7 anteriores',7),('Últimos 30 dias versus os 30 anteriores',30)]:
+            self.period.addItem(title,days)
+        self.period.currentIndexChanged.connect(self.reload)
+        lay.addWidget(self.period)
+        self.table=QTableWidget(len(TOPICS),7)
+        self.table.setHorizontalHeaderLabels(['Assunto','Respostas','Acertos','Percentual','Faixa aproximada (95%)','Período anterior','Mudança (p.p.)'])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.verticalHeader().hide()
+        self.table.setMinimumHeight(290)
         lay.addWidget(self.table)
         self.note=QLabel('A faixa mostra a incerteza da porcentagem de acertos; poucas respostas produzem uma faixa ampla. '
                          'Exercícios relacionados não são amostras totalmente independentes: a faixa é ilustrativa, '
-                         'não certifica habilidade. Uma vitória em fichas não entra na nota de exercícios.')
+                         'não certifica habilidade. Mudança é a diferença em pontos percentuais, não lucro. '
+                         'Períodos usam janelas móveis contadas a partir de agora. Perguntas diferentes e amostras pequenas limitam a comparação.')
         self.note.setWordWrap(True)
         lay.addWidget(self.note)
         self.suggestion=QLabel()
@@ -153,25 +170,34 @@ class ProgressPanel(QWidget):
         lay.addWidget(self.recent,1)
         self.reload()
 
-    def reload(self):
-        attempts=self.window.repo.exercise_attempts()
-        self.progress=topic_progress(attempts)
+    def reload(self,*_):
+        all_attempts=self.window.repo.exercise_attempts()
+        comparison=compare_periods(all_attempts,self.period.currentData())
+        attempts=comparison['current']
+        self.progress=comparison['stats']
         total=len(attempts)
         hits=sum(a['correct'] for a in attempts)
         sessions,hands=self.window.repo.stats()
         self.summary.setText(f'{total} '+('exercício respondido' if total==1 else 'exercícios respondidos')+
             f' • {hits} '+('acerto' if hits==1 else 'acertos')+
             f' • {hands} '+('mão simulada' if hands==1 else 'mãos simuladas')+
-            f' • {sessions} '+('sessão' if sessions==1 else 'sessões'))
+            f' • {sessions} '+('sessão' if sessions==1 else 'sessões')+
+            (' — respostas do período escolhido; mãos e sessões acumuladas' if self.period.currentData() else ''))
         for row,(key,title) in enumerate(TOPICS.items()):
             stats=self.progress[key]
             n,c=stats['total'],stats['correct']
             interval=stats['interval']
+            previous=comparison['previous_stats'][key]
+            prev_n=previous['total']
+            prev_text=f"{previous['correct']}/{prev_n} ({previous['correct']/prev_n:.0%})" if prev_n else 'Sem amostra'
+            change=comparison['changes'][key]
             cells=[title,str(n),str(c),f'{c/n:.0%}' if n else 'Sem amostra',
-                   f'{interval[0]:.0%} a {interval[1]:.0%}' if interval else 'Ainda sem estimativa']
+                   f'{interval[0]:.0%} a {interval[1]:.0%}' if interval else 'Sem estimativa',
+                   prev_text if self.period.currentData() else 'Escolha 7 ou 30 dias',
+                   f'{change:+.1f}' if change is not None else 'Sem comparação']
             for col,value in enumerate(cells):
                 self.table.setItem(row,col,QTableWidgetItem(value))
-        topic=recommend_topic(self.progress)
+        topic=recommend_topic(topic_progress(all_attempts))
         self.suggestion.setText(f'Sugestão de estudo: {TOPICS[topic]}. '
             'A sugestão equilibra assuntos ainda pouco praticados e acertos recentes. Não é uma classificação para torneios reais.')
         recent=attempts[-10:]
@@ -188,7 +214,7 @@ class ProgressPanel(QWidget):
         if not self.window.can_study():
             return
         row=self.table.currentRow()
-        key=list(TOPICS)[row] if 0<=row<len(TOPICS) else recommend_topic(self.progress)
+        key=list(TOPICS)[row] if 0<=row<len(TOPICS) else recommend_topic(topic_progress(self.window.repo.exercise_attempts()))
         panel=self.window.training_panel
         panel.topic.setCurrentIndex(panel.topic.findData(key))
         panel.new_exercise()

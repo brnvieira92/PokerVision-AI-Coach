@@ -302,3 +302,327 @@ def test_ranges_cells_update_real_combo_count(app,tmp_path):
     panel.toggle(0,0)
     assert combo_count(panel.selected)==16
     w.close()
+
+
+def test_equity_lab_worker_results_and_validation(app,tmp_path):
+    w=Window(tmp_path/'lab.sqlite3')
+    w.timer.stop()
+    panel=w.equity_panel
+    panel.preset.setCurrentIndex(2)
+    panel.samples.setValue(100)
+    panel.run.click()
+    wait_jobs(app,panel.jobs)
+    assert panel.result and panel.result.equity==1
+    assert '100 vitórias' in panel.output.toPlainText()
+    panel.examples.setCurrentIndex(1)
+    assert len(panel.canvas.board)==5 and panel.canvas.villain
+    panel.set_card(panel.hole[1],panel.hole[0].currentData())
+    panel.invalidate()
+    panel.run.click()
+    wait_jobs(app,panel.jobs)
+    assert panel.result is None and 'duplicadas' in panel.status.text()
+    w.close()
+
+
+def test_study_plan_persists_baselines_and_completion(app,tmp_path):
+    from pokervision.training import ExerciseFactory
+    path=tmp_path/'plan.sqlite3'
+    w=Window(path)
+    w.timer.stop()
+    panel=w.study_panel
+    panel.reload()
+    plan_id=panel.plan.id
+    topic=panel.plan.tasks[0].topic
+    factory=ExerciseFactory(42)
+    for _ in range(5):
+        exercise=factory.generate(topic)
+        w.repo.answer_exercise(exercise,exercise.answer)
+    panel.reload()
+    assert '1 de 3 blocos' in panel.summary.text()
+    panel.start.click()
+    assert w.training_panel.exercise.topic==panel.plan.tasks[1].topic
+    w.close()
+    w=Window(path)
+    w.timer.stop()
+    w.study_panel.reload()
+    assert w.study_panel.plan.id==plan_id
+    assert '1 de 3 blocos' in w.study_panel.summary.text()
+    w.close()
+
+
+def test_progress_period_dropdown_changes_comparison(app,tmp_path):
+    from datetime import datetime,timedelta,timezone
+    from pokervision.training import ExerciseFactory
+    w=Window(tmp_path/'period.sqlite3')
+    w.timer.stop()
+    factory=ExerciseFactory(4)
+    for days,hit in [(10,False),(1,True)]:
+        exercise=factory.generate('price')
+        chosen=exercise.answer if hit else next(c.key for c in exercise.choices if c.key!=exercise.answer)
+        w.repo.answer_exercise(exercise,chosen)
+        with w.repo.db:
+            w.repo.db.execute('UPDATE exercise_attempts SET created=? WHERE exercise_id=?',
+                ((datetime.now(timezone.utc)-timedelta(days=days)).isoformat(),exercise.id))
+    panel=w.progress_panel
+    panel.period.setCurrentIndex(1)
+    assert panel.table.item(1,1).text()=='1'
+    assert panel.table.item(1,5).text()=='0/1 (0%)'
+    assert panel.table.item(1,6).text()=='+100.0'
+    w.close()
+
+
+def test_evaluation_blocks_lab_and_plan(app,tmp_path):
+    w=Window(tmp_path/'guard4.sqlite3')
+    w.timer.stop()
+    w.position.setCurrentIndex(3)
+    w.mode.setCurrentIndex(1)
+    w.configure()
+    w.new_hand()
+    for page in (w.equity_panel,w.study_panel):
+        w.show_page(page)
+        assert w.pages.currentWidget() is w.coach_panel
+    assert not w.equity_panel.run.isEnabled()
+    w.study_panel.reload()
+    assert not w.study_panel.start.isEnabled()
+    while not w.table.finished:
+        w.perform('check' if w.table.legal()['check'] else 'call')
+    w.finish_training_session()
+    w.show_page(w.study_panel)
+    assert w.study_panel.start.isEnabled()
+    w.close()
+
+
+def test_review_imports_only_visible_cards_into_simplified_lab(app,tmp_path):
+    from pokervision.probability import simulate
+    w=Window(tmp_path/'review_lab.sqlite3')
+    w.timer.stop()
+    w.position.setCurrentIndex(3)
+    w.configure()
+    w.new_hand()
+    while not w.table.finished:
+        w.perform('check' if w.table.legal()['check'] else 'call')
+    w.review_panel.reload()
+    w.review_panel.explore.click()
+    panel=w.equity_panel
+    assert panel.mode.currentData()=='random' and not panel.canvas.board
+    assert not panel.canvas.villain
+    assert 'apenas um' in panel.source_note
+    assert not panel.jobs.busy
+    old=panel.generation
+    panel.invalidate()
+    result=simulate(('As','Ks'),('Qs','Js','Ts','2c','3d'),opponent=('Ah','Ad'),samples=2)
+    panel.receive(result,old)
+    assert panel.result is None
+    w.close()
+
+
+def test_assisted_game_pauses_computes_resumes_and_records(app,tmp_path):
+    w=Window(tmp_path/'assisted.sqlite3')
+    w.timer.stop()
+    w.position.setCurrentIndex(3)
+    w.configure()
+    w.new_hand()
+    before=[(p.stack,p.bet,p.invested,list(p.hole)) for p in w.table.players],list(w.table.board),list(w.table.history)
+    actor=w.table.actor
+    w.assist_button.click()
+    dialog=w.assisted_dialog
+    assert w.assistance_paused and dialog
+    assert not w.action_buttons['call'].isEnabled()
+    w.bot_step()
+    w.perform('fold')
+    assert w.table.actor==actor
+    dialog.samples.setValue(100)
+    dialog.run.click()
+    wait_jobs(app,dialog.jobs,timeout=6)
+    assert dialog.result and dialog.result.opponents==5
+    assert len(dialog.result.pots)==1
+    assert dialog.result.eligible_pot==12
+    assert dialog.result.scenario_id==dialog.scenario.id
+    assert 'não recomenda uma ação ótima' in dialog.output.toPlainText()
+    assert before==([(p.stack,p.bet,p.invested,list(p.hole)) for p in w.table.players],list(w.table.board),list(w.table.history))
+    dialog.examples.setCurrentIndex(1)
+    assert len(dialog.canvas.board)==5 and not dialog.canvas.villain
+    assert w.table.board==[]
+    decision_id=dialog.analysis.decision.id
+    dialog.accept()
+    app.processEvents()
+    assert not w.assistance_paused and w.table.actor==actor
+    assert w.action_buttons['call'].isEnabled()
+    w.begin_assisted()
+    reopened=w.assisted_dialog
+    assert reopened.analysis.decision.id==decision_id
+    reopened.samples.setValue(100)
+    reopened.start()
+    wait_jobs(app,reopened.jobs,timeout=6)
+    assert len(w.hand_assistance)==1
+    assert w.hand_assistance[decision_id]['scenario']['id']==reopened.scenario.id
+    reopened.accept()
+    app.processEvents()
+    w.human_action('call')
+    while not w.table.finished:
+        w.perform('check' if w.table.legal()['check'] else 'call')
+    payload=w.repo.hands()[0][3]
+    assert len(payload['assistance'])==1
+    assert payload['assistance'][0]['decision_id']==decision_id
+    assert payload['decisions'][0]['analysis']['decision']['id']==decision_id
+    w.close()
+
+
+def test_evaluation_blocks_assistance_entry_points(app,tmp_path):
+    w=Window(tmp_path/'no_assistance.sqlite3')
+    w.timer.stop()
+    w.position.setCurrentIndex(3)
+    w.mode.setCurrentIndex(1)
+    w.configure()
+    w.new_hand()
+    assert not w.assist_button.isEnabled()
+    w.begin_assisted()
+    assert w.assisted_dialog is None and not w.assistance_paused
+    while not w.table.finished:
+        w.perform('check' if w.table.legal()['check'] else 'call')
+    assert not w.repo.hands()[0][3]['assistance']
+    w.close()
+
+
+def test_close_assisted_dialog_cancels_and_discards_result(app,tmp_path):
+    from PySide6.QtTest import QTest
+    w=Window(tmp_path/'cancel_assisted.sqlite3')
+    w.timer.stop()
+    w.position.setCurrentIndex(3)
+    w.configure()
+    w.new_hand()
+    w.begin_assisted()
+    dialog=w.assisted_dialog
+    dialog.samples.setValue(1000)
+    dialog.start()
+    token=dialog.jobs.task.token
+    dialog.reject()
+    assert token.event.is_set()
+    assert not w.assistance_paused and w.assisted_dialog is None
+    QTest.qWait(80)
+    app.processEvents()
+    assert not w.hand_assistance
+    while not w.table.finished:
+        w.perform('check' if w.table.legal()['check'] else 'call')
+    w.close()
+
+
+def finish_sng_hand(panel):
+    for _ in range(500):
+        if panel.table.finished:
+            return
+        legal=panel.table.legal()
+        panel.perform('check' if legal['check'] else 'call')
+    raise AssertionError('Mão de torneio não terminou')
+
+
+def test_sng_playable_hand_levels_persistence_and_cash_isolation(app,tmp_path):
+    w=Window(tmp_path/'sng_gui.sqlite3')
+    w.timer.stop()
+    panel=w.tournament_panel
+    panel.timer.stop()
+    panel.stack.setValue(100)
+    panel.big.setValue(10)
+    panel.hands_level.setValue(1)
+    panel.seed_override=2
+    panel.start.click()
+    assert panel.active and not panel.table.finished
+    assert panel.table is not w.table
+    assert all(p.stack==200 for p in w.table.players)
+    assert not w.new_button.isEnabled()
+    while panel.table.actor!=panel.hero:
+        panel.perform('check' if panel.table.legal()['check'] else 'call')
+    assert panel.actions['call'].isEnabled()
+    panel.actions['call'].click()
+    finish_sng_hand(panel)
+    assert panel.tournament.completed_hands==1
+    assert panel.tournament.next_blinds==(10,20)
+    assert panel.next.isEnabled()
+    assert 'Modelo ICM' in panel.report.toPlainText()
+    hands=w.repo.hands()
+    assert hands[0][3]['context']['kind']=='sit_and_go'
+    assert hands[0][3]['decisions']
+    assert w.repo.tournaments()[0]['completed_hands']==1
+    panel.abandon()
+    assert not panel.active and w.new_button.isEnabled()
+    w.close()
+
+
+def test_sng_resume_between_hands_preserves_progress(app,tmp_path):
+    path=tmp_path/'resume_sng.sqlite3'
+    w=Window(path)
+    w.timer.stop()
+    p=w.tournament_panel
+    p.timer.stop()
+    p.seed_override=2
+    p.hands_level.setValue(1)
+    p.start_tournament()
+    finish_sng_hand(p)
+    stacks=[x.stack for x in p.table.players]
+    identity=p.tournament.id
+    w.close()
+    w=Window(path)
+    w.timer.stop()
+    p=w.tournament_panel
+    p.timer.stop()
+    p.restore_selected()
+    assert p.tournament.id==identity and p.tournament.completed_hands==1
+    assert [x.stack for x in p.table.players]==stacks
+    assert p.table.finished and p.next.isEnabled()
+    assert p.hands_level.value()==1
+    assert p.prizes.currentData()==p.tournament.config.payouts
+    p.next.click()
+    assert p.table.number==2 and p.table.big==40
+    finish_sng_hand(p)
+    p.abandon()
+    w.close()
+
+
+def test_sng_evaluation_hides_icm_and_study_until_completion(app,tmp_path):
+    w=Window(tmp_path/'evaluation_sng.sqlite3')
+    w.timer.stop()
+    p=w.tournament_panel
+    p.timer.stop()
+    p.mode.setCurrentIndex(1)
+    p.start_tournament()
+    assert p.evaluation_active and not w.can_study()
+    assert 'Modo Avaliação' in p.lesson.toPlainText()
+    w.show_page(w.equity_panel)
+    assert w.pages.currentWidget() is w.coach_panel
+    finish_sng_hand(p)
+    assert 'Modelo ICM entre mãos' not in p.report.toPlainText()
+    assert not w.can_review()
+    p.abandon()
+    assert w.can_study()
+    w.close()
+
+
+def test_complete_sng_gui_saves_champion_and_all_hands(app,tmp_path):
+    from fractions import Fraction
+    from pokervision.bots import observe
+    w=Window(tmp_path/'complete_sng.sqlite3')
+    w.timer.stop()
+    p=w.tournament_panel
+    p.timer.stop()
+    p.stack.setValue(100)
+    p.big.setValue(10)
+    p.hands_level.setValue(1)
+    p.seed_override=2
+    p.start_tournament()
+    for _ in range(10000):
+        if not p.active:
+            break
+        if p.table.finished:
+            p.next_hand()
+        else:
+            seat=p.table.actor
+            p.perform(*p.bots[seat].decide_tournament(observe(p.table),p.table.big))
+    assert p.tournament.state=='completed'
+    assert len(p.tournament.standings())==6
+    assert sum(x.stack for x in p.table.players)==600
+    assert sum(Fraction(r['prize_numerator'],r['prize_denominator']) for r in p.tournament.standings())==60
+    assert len(w.repo.hands())==p.tournament.completed_hands
+    assert w.repo.tournaments()[0]['state']=='completed'
+    assert p.tabs.currentWidget() is p.report
+    assert w.new_button.isEnabled()
+    w.close()

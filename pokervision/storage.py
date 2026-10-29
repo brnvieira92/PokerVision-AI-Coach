@@ -11,7 +11,7 @@ class Repository:
             Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(path)
         version = self.db.execute('PRAGMA user_version').fetchone()[0]
-        if version > 3:
+        if version > 4:
             raise RuntimeError('Banco criado por versão mais recente')
         with self.db:
             self.db.execute('CREATE TABLE IF NOT EXISTS sessions (id INTEGER PRIMARY KEY, started TEXT NOT NULL, ended TEXT, settings TEXT NOT NULL)')
@@ -19,7 +19,8 @@ class Repository:
             self.db.execute('CREATE TABLE IF NOT EXISTS coach_reports (analysis_id TEXT PRIMARY KEY, payload TEXT NOT NULL)')
             self.db.execute('CREATE TABLE IF NOT EXISTS preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
             self.db.execute('CREATE TABLE IF NOT EXISTS exercise_attempts (exercise_id TEXT PRIMARY KEY, created TEXT NOT NULL, topic TEXT NOT NULL, exercise TEXT NOT NULL, chosen TEXT NOT NULL, correct INTEGER NOT NULL CHECK(correct IN (0,1)))')
-            self.db.execute('PRAGMA user_version=3')
+            self.db.execute('CREATE TABLE IF NOT EXISTS tournaments (id TEXT PRIMARY KEY, created TEXT NOT NULL, updated TEXT NOT NULL, state TEXT NOT NULL, payload TEXT NOT NULL)')
+            self.db.execute('PRAGMA user_version=4')
         self.db.execute('PRAGMA foreign_keys=ON')
 
     def session(self, settings):
@@ -27,17 +28,50 @@ class Repository:
             return self.db.execute('INSERT INTO sessions(started,settings) VALUES (?,?)',
                 (datetime.now(timezone.utc).isoformat(), json.dumps(settings))).lastrowid
 
-    def save(self, session, table, decisions=None):
+    def _save_hand(self, session, table, decisions=None, assistance=None, context=None, strict=False):
         if not table.finished:
             raise ValueError('Somente mãos terminadas')
         payload = dict(board=table.board, button=table.button, history=table.history,
                        players=[dict(name=p.name, hole=p.hole, stack=p.stack,
                                      invested=p.invested, folded=p.folded) for p in table.players],
                        initial_stacks=table.initial_stacks, awards=table.awards,
-                       pots=table.pots, rake=table.rake, decisions=decisions or [])
+                       pots=table.pots, rake=table.rake, decisions=decisions or [], assistance=assistance or [], context=context or {})
+        command='INSERT' if strict else 'INSERT OR IGNORE'
+        self.db.execute(command+' INTO hands(session_id,number,payload) VALUES (?,?,?)',
+                        (session, table.number, json.dumps(payload, ensure_ascii=False)))
+
+    def save(self, session, table, decisions=None, assistance=None, context=None):
         with self.db:
-            self.db.execute('INSERT OR IGNORE INTO hands(session_id,number,payload) VALUES (?,?,?)',
-                            (session, table.number, json.dumps(payload, ensure_ascii=False)))
+            self._save_hand(session,table,decisions,assistance,context)
+
+    def _write_tournament(self, payload):
+        now=datetime.now(timezone.utc).isoformat()
+        self.db.execute('INSERT INTO tournaments(id,created,updated,state,payload) VALUES (?,?,?,?,?) '
+                        'ON CONFLICT(id) DO UPDATE SET updated=excluded.updated,state=excluded.state,payload=excluded.payload',
+                        (payload['id'],now,now,payload['state'],json.dumps(payload,ensure_ascii=False)))
+
+    def save_tournament(self, tournament):
+        with self.db:
+            self._write_tournament(tournament.checkpoint())
+            if not tournament.active and tournament.session_id is not None:
+                self.db.execute('UPDATE sessions SET ended=? WHERE id=?',
+                                (datetime.now(timezone.utc).isoformat(),tournament.session_id))
+
+    def save_tournament_hand(self,tournament,decisions=None):
+        payload=tournament.checkpoint()
+        if tournament.session_id is None:
+            raise ValueError('Torneio sem sessão persistente')
+        with self.db:
+            self._save_hand(tournament.session_id,tournament.table,decisions,context=dict(
+                kind='sit_and_go',tournament_id=tournament.id,hero=tournament.hero,
+                small=tournament.table.small,big=tournament.table.big),strict=True)
+            self._write_tournament(payload)
+            if not tournament.active:
+                self.db.execute('UPDATE sessions SET ended=? WHERE id=?',
+                                (datetime.now(timezone.utc).isoformat(),tournament.session_id))
+
+    def tournaments(self):
+        return [json.loads(row[0]) for row in self.db.execute('SELECT payload FROM tournaments ORDER BY rowid DESC')]
 
     def hands(self):
         return [(i, s, n, json.loads(p)) for i, s, n, p in self.db.execute(

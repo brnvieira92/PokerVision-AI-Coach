@@ -94,6 +94,9 @@ class ReviewPanel(QWidget):
         self.practice=QPushButton('Praticar a conta desta decisão')
         self.practice.clicked.connect(self.practice_price)
         lay.addWidget(self.practice)
+        self.explore=QPushButton('Explorar possibilidades de cartas desta decisão')
+        self.explore.clicked.connect(self.explore_equity)
+        lay.addWidget(self.explore)
         self.render()
 
     def reload(self,hand_id=None):
@@ -149,6 +152,7 @@ class ReviewPanel(QWidget):
         self.next.setEnabled(available and self.index<len(self.records)-1)
         self.slider.setEnabled(available)
         self.practice.setEnabled(False)
+        self.explore.setEnabled(available)
         if not available:
             self.canvas.set_cards()
             self.values.clear()
@@ -178,3 +182,10 @@ class ReviewPanel(QWidget):
         s=record.analysis.decision
         self.window.training_panel.practice_decision(s)
         self.window.pages.setCurrentWidget(self.window.training_panel)
+
+
+    def explore_equity(self):
+        if not self.window.can_review() or not self.records:
+            return
+        self.window.equity_panel.from_decision(self.records[self.index].analysis.decision)
+        self.window.pages.setCurrentWidget(self.window.equity_panel)

@@ -86,7 +86,7 @@ def test_v2_migration_keeps_preferences_and_reports(tmp_path):
     assert repo.preference('ai_mode')=='economy'
     assert repo.coach_report('past')['text']=='original'
     assert repo.exercise_attempts()==[]
-    assert repo.db.execute('PRAGMA user_version').fetchone()[0]==3
+    assert repo.db.execute('PRAGMA user_version').fetchone()[0]==4
     repo.close()
 
 

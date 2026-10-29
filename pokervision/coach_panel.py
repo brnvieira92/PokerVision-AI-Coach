@@ -100,7 +100,8 @@ class CoachPanel(QWidget):
             widget.setEnabled(not busy)
         self.cancel_button.setEnabled(busy)
         self.explain_button.setEnabled(not busy and self.active_analysis is not None and self.window.can_review())
-        self.finish_button.setEnabled(not busy and self.window.table.finished and self.window.session is not None)
+        tournament=getattr(self.window,'tournament_panel',None)
+        self.finish_button.setEnabled(not busy and self.window.table.finished and self.window.session is not None and not (tournament and tournament.active))
         for widget in (self.mode, self.model, self.cpu, self.pull_choice):
             widget.setEnabled(not busy)
 

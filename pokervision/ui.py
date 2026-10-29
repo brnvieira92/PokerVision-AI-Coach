@@ -6,8 +6,9 @@ from PySide6.QtCore import Qt, QTimer, QRectF, QTimeLine
 from PySide6.QtGui import QColor, QPainter, QFont, QFontDatabase
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout,
     QVBoxLayout, QLabel, QPushButton, QSpinBox, QComboBox, QTextEdit,
-    QStackedWidget, QListWidget, QFormLayout, QMessageBox, QSplitter, QSlider, QTextBrowser, QDialog, QDoubleSpinBox)
+    QStackedWidget, QListWidget, QFormLayout, QMessageBox, QSplitter, QSlider, QTextBrowser, QDialog, QDoubleSpinBox, QScrollArea)
 from .engine import Table
+from .table_view import Felt
 from .bots import Bot, observe
 from .cards import LABELS, evaluate
 from .education import STAGES, cards_text, readable_history, turn_lesson, GLOSSARY
@@ -16,66 +17,15 @@ from .coach import snapshot, analyze, DecisionRecord, review_summary
 from .coach_panel import CoachPanel
 from .review import ReviewPanel
 from .training_ui import TrainingPanel, ProgressPanel, RangesPanel
+from .equity_ui import EquityPanel
+from .study_ui import StudyPanel
+from .assistance import capture as capture_assisted
+from .assistance_ui import AssistedDialog
+from .tournament_ui import TournamentPanel
 
 SUITS = {'c': '♣', 'd': '♦', 'h': '♥', 's': '♠'}
 
 
-class Felt(QWidget):
-    def __init__(self, window):
-        super().__init__()
-        self.window = window
-        self.deal = QTimeLine(280, self)
-        self.deal.valueChanged.connect(lambda _: self.update())
-        self.setMinimumSize(620, 440)
-
-    def paintEvent(self, event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-        w, h = self.width(), self.height()
-        p.setPen(QColor('#355b53'))
-        p.setBrush(QColor('#123b35'))
-        p.drawRoundedRect(QRectF(42, 70, w-84, h-145), 145, 145)
-        p.setPen(QColor('#78aa99'))
-        p.setFont(QFont('Segoe UI', 11))
-        p.drawText(QRectF(0, h/2-55, w, 25), Qt.AlignCenter, 'POKERVISION  /  CASH LAB')
-        t = self.window.table
-        p.setPen(QColor('#ecdbab'))
-        p.drawText(QRectF(0, h/2+40, w, 30), Qt.AlignCenter,
-                   f'Fichas no centro: {t.pot}  ·  {STAGES[t.street]}  ·  Mão {t.number}')
-
-        def card(x, y, c=None):
-            p.setPen(QColor('#364a68' if c is None else '#fff8ec'))
-            p.setBrush(QColor('#243554' if c is None else '#fff8ec'))
-            p.drawRoundedRect(QRectF(x, y, 39, 54), 5, 5)
-            if c:
-                p.setPen(QColor('#bf394f' if c[1] in 'dh' else '#142a36'))
-                p.setFont(QFont('Segoe UI', 13 if c[0] == 'T' else 14, QFont.Bold))
-                p.drawText(QRectF(x, y, 39, 54), Qt.AlignCenter, ('10' if c[0] == 'T' else c[0])+SUITS[c[1]])
-            else:
-                p.setPen(QColor('#7d91b7'))
-                p.drawText(QRectF(x, y, 39, 54), Qt.AlignCenter, '◆')
-        p.setOpacity(self.deal.currentValue() if self.deal.state() == QTimeLine.Running else 1.0)
-        for k in range(5):
-            c = t.board[k] if k < len(t.board) else None
-            card(w/2-111+k*46, h/2-21, c)
-        p.setOpacity(1.0)
-        for i, player in enumerate(t.players):
-            angle = math.pi/2 + i*2*math.pi/len(t.players)
-            x, y = w/2+math.cos(angle)*(w/2-100), h/2+math.sin(angle)*(h/2-80)
-            y = min(y, h-94)
-            p.setPen(QColor('#63e0b0' if t.actor == i else '#3a4a60'))
-            p.setBrush(QColor('#19283a'))
-            p.drawRoundedRect(QRectF(x-76, y-29, 152, 58), 12, 12)
-            p.setFont(QFont('Segoe UI', 10, QFont.Bold))
-            p.setPen(QColor('#96a4b6' if player.folded else '#edf4ff'))
-            badges = (' • Botão' if i == t.button else '') + (' • Menor' if i == getattr(t, 'sb', -1) else '') + (' • Maior' if i == getattr(t, 'bb', -1) else '')
-            p.drawText(QRectF(x-74, y-25, 148, 25), Qt.AlignCenter, player.name+badges)
-            p.drawText(QRectF(x-74, y, 148, 25), Qt.AlignCenter,
-                       f'{player.stack} fichas  ·  aposta {player.bet}')
-            cy = y+34
-            for k, c in enumerate(player.hole):
-                reveal = i == self.window.hero or (t.finished and not player.folded)
-                card(x-42+k*45, cy, c if reveal else None)
 
 
 class Window(QMainWindow):
@@ -87,12 +37,20 @@ class Window(QMainWindow):
         self.table = Table()
         self.hero, self.session = 0, None
         self.training_mode = 0
+        self.closing=False
+        self.assistance_paused=False
+        self.assisted_dialog=None
+        self.assisted_analysis=None
+        self.hand_assistance={}
         self.hand_decisions = []
         self.coach_panel = CoachPanel(self)
         self.review_panel = ReviewPanel(self)
         self.training_panel = TrainingPanel(self)
         self.progress_panel = ProgressPanel(self)
         self.ranges_panel = RangesPanel(self)
+        self.equity_panel = EquityPanel(self)
+        self.study_panel = StudyPanel(self)
+        self.tournament_panel = TournamentPanel(self)
         self.bots = [Bot(profile, i*17) for i, profile in enumerate(
             ['TAG', 'LAG', 'Tight passive', 'Loose passive', 'Conservador', 'TAG'])]
         root = QWidget()
@@ -107,7 +65,8 @@ class Window(QMainWindow):
                             ('Analisar mãos', self.history_page()), ('Configurações', self.settings_page()),
                             ('Coach IA', self.coach_panel), ('Revisão visual', self.review_panel),
                             ('Treinamento', self.training_panel), ('Mãos iniciais', self.ranges_panel),
-                            ('Meu progresso', self.progress_panel)]:
+                            ('Meu progresso', self.progress_panel), ('Plano de estudo', self.study_panel),
+                            ('Laboratório de equity', self.equity_panel), ('Jogar Sit & Go',self.tournament_panel)]:
             self.pages.addWidget(page)
             b = QPushButton(label)
             b.clicked.connect(lambda checked=False, pg=page: self.show_page(pg))
@@ -116,10 +75,17 @@ class Window(QMainWindow):
         help_button.clicked.connect(self.show_glossary)
         nav.addWidget(help_button)
         nav.addStretch()
-        info = QLabel('Fichas fictícias\n\nSNG • MTT\nPrevistos para próximas fases\n\nFeche este aplicativo antes\nde abrir clientes de poker real.')
+        info = QLabel('Fichas fictícias\n\nSit & Go disponível\nMTT previsto para próxima fase\n\nFeche este aplicativo antes\nde abrir clientes de poker real.')
         info.setWordWrap(True)
         nav.addWidget(info)
-        layout.addLayout(nav, 1)
+        sidebar=QWidget()
+        sidebar.setLayout(nav)
+        sidebar_scroll=QScrollArea()
+        sidebar_scroll.setWidgetResizable(True)
+        sidebar_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        sidebar_scroll.setWidget(sidebar)
+        sidebar_scroll.setMinimumWidth(215)
+        layout.addWidget(sidebar_scroll,1)
         layout.addWidget(self.pages, 5)
         self.timer = QTimer(self)
         self.timer.setInterval(450)
@@ -178,6 +144,9 @@ class Window(QMainWindow):
         self.ask_button = QPushButton('Pedir explicação desta decisão')
         self.ask_button.clicked.connect(self.ask_current_decision)
         side_lay.addWidget(self.ask_button)
+        self.assist_button=QPushButton('Jogo assistido: pausar e estudar equity')
+        self.assist_button.clicked.connect(self.begin_assisted)
+        side_lay.addWidget(self.assist_button)
         side.setMinimumWidth(340)
         split.addWidget(side)
         split.setStretchFactor(0, 3)
@@ -264,7 +233,12 @@ class Window(QMainWindow):
         return page
 
     def show_page(self, page):
-        study_pages=(self.training_panel,self.ranges_panel,self.progress_panel)
+        if page is self.tournament_panel and (not self.table.finished or self.assistance_paused or (self.training_mode==1 and self.session is not None)):
+            self.error('Termine a mão de Cash Game e finalize a sessão de Avaliação antes de acessar o Sit & Go.')
+            return
+        if page is self.tournament_panel:
+            self.tournament_panel.refresh_saved()
+        study_pages=(self.training_panel,self.ranges_panel,self.progress_panel,self.equity_panel,self.study_panel)
         if page in study_pages and not self.can_study():
             self.coach_panel.output.setPlainText('Finalize a sessão de Avaliação para acessar os exercícios, as correções e os conjuntos de mãos.')
             self.pages.setCurrentWidget(self.coach_panel)
@@ -278,9 +252,18 @@ class Window(QMainWindow):
             self.ranges_panel.refresh_access()
         elif page is self.progress_panel:
             self.progress_panel.reload()
+        elif page is self.equity_panel:
+            self.equity_panel.refresh_access()
+        elif page is self.study_panel:
+            self.study_panel.reload()
         self.pages.setCurrentWidget(page)
 
     def configure(self):
+        if self.tournament_panel.active:
+            self.error('Conclua ou abandone o Sit & Go antes de iniciar uma sessão de Cash Game.')
+            return
+        if self.assistance_paused:
+            return
         if not self.table.finished:
             self.error('Termine a mão antes de mudar a sessão.')
             return
@@ -296,6 +279,8 @@ class Window(QMainWindow):
             self.table, self.hero = table, hero
             self.training_mode = self.mode.currentIndex()
             self.hand_decisions = []
+            self.hand_assistance={}
+            self.assisted_analysis=None
             self.coach_panel.clear_context()
             self.review_panel.lock()
             self.session = self.repo.session(self.settings())
@@ -319,11 +304,18 @@ class Window(QMainWindow):
         self.refresh()
 
     def new_hand(self):
+        if self.tournament_panel.active:
+            self.error('Conclua ou abandone o Sit & Go antes de jogar Cash Game.')
+            return
+        if self.assistance_paused:
+            return
         try:
             if self.session is None:
                 self.session = self.repo.session(self.settings())
             self.table.start()
             self.hand_decisions = []
+            self.hand_assistance={}
+            self.assisted_analysis=None
             self.coach_panel.clear_context()
             self.review_panel.lock()
             self.felt.deal.start()
@@ -337,20 +329,24 @@ class Window(QMainWindow):
         self.perform(action, self.amount.value() if action == 'raise' else None)
 
     def perform(self, action, amount=None):
+        if self.assistance_paused:
+            return
         try:
             decision = analyze(snapshot(self.table, self.hero)) if self.table.actor == self.hero else None
-            active = self.coach_panel.active_analysis
+            active = self.assisted_analysis or self.coach_panel.active_analysis
             if decision and active and active.decision.model_dump(exclude={'id'}) == decision.decision.model_dump(exclude={'id'}):
                 decision = active
             before = len(self.table.board)
             self.table.act(action, amount)
             if decision:
                 self.hand_decisions.append(DecisionRecord(analysis=decision, action=action, amount=amount))
+                self.assisted_analysis=None
                 self.coach_panel.clear_context()
             if len(self.table.board) != before:
                 self.felt.deal.start()
             if self.table.finished:
-                self.repo.save(self.session, self.table, [r.model_dump() for r in self.hand_decisions])
+                self.repo.save(self.session, self.table, [r.model_dump() for r in self.hand_decisions],
+                               assistance=list(self.hand_assistance.values()))
                 if self.training_mode == 0:
                     self.coach_panel.load_review(self.hand_decisions, 'Revisão da última mão concluída')
             self.refresh()
@@ -358,7 +354,7 @@ class Window(QMainWindow):
             self.error(str(exc))
 
     def bot_step(self):
-        if not self.table.finished and self.table.actor != self.hero:
+        if not self.assistance_paused and not self.table.finished and self.table.actor != self.hero:
             obs = observe(self.table)
             self.perform(*self.bots[self.table.actor].decide(obs))
 
@@ -368,20 +364,24 @@ class Window(QMainWindow):
         self.log.setPlainText(readable_history(t.history))
         bar = self.log.verticalScrollBar()
         bar.setValue(bar.maximum())
-        human = t.actor == self.hero and not t.finished
+        human = t.actor == self.hero and not t.finished and not self.assistance_paused
         legal = t.legal() if human else {}
         for action, button in self.action_buttons.items():
             allowed = (legal.get('raise_allowed') if action == 'raise' else
                        legal.get('all_in') if action == 'all-in' else legal.get(action))
             button.setEnabled(human and bool(allowed))
         self.action_buttons['call'].setText(f"Pagar {legal.get('call', 0)} fichas")
-        self.new_button.setEnabled(t.finished)
+        self.new_button.setEnabled(t.finished and not self.tournament_panel.active)
         self.ask_button.setEnabled(human and self.training_mode == 0)
+        self.assist_button.setEnabled(human and self.training_mode == 0)
+        self.amount.setEnabled(human)
+        self.slider.setEnabled(human)
         self.coach_panel.update_buttons()
         if self.training_panel.access_allowed != self.can_study():
             self.training_panel.refresh_access()
         self.ranges_panel.refresh_access()
-        if not self.can_study() and self.pages.currentWidget() in (self.training_panel,self.ranges_panel,self.progress_panel):
+        self.equity_panel.refresh_access()
+        if not self.can_study() and self.pages.currentWidget() in (self.training_panel,self.ranges_panel,self.progress_panel,self.equity_panel,self.study_panel):
             self.pages.setCurrentWidget(self.coach_panel)
         if human:
             minimum, maximum = min(legal['minimum'], legal['maximum']), legal['maximum']
@@ -390,6 +390,10 @@ class Window(QMainWindow):
             self.status.setText(f"Sua vez. Para apostar ou aumentar, escolha o total desta rodada: de {minimum} a {maximum} fichas.")
         else:
             self.status.setText('Mão concluída. Clique em Nova mão.' if t.finished else f'{t.players[t.actor].name} está pensando…')
+        if self.assistance_paused:
+            self.status.setText('Jogo pausado para estudo. Volte da janela de ajuda para escolher sua ação.')
+        elif self.tournament_panel.active:
+            self.status.setText('Sit & Go em andamento. Volte a Jogar Sit & Go para continuar; Cash Game fica disponível após encerrar o torneio.')
         if human and self.training_mode == 0:
             self.coach.setPlainText(turn_lesson(t, self.hero))
         elif t.finished and t.number:
@@ -423,17 +427,21 @@ class Window(QMainWindow):
         self.saved_hands = self.repo.hands()
         self.history_list.clear()
         for i, session, number, payload in self.saved_hands:
-            self.history_list.addItem(f'Mão #{i} · Sessão {session} · Mão {number}')
+            self.history_list.addItem(('Sit & Go · ' if payload.get('context',{}).get('kind')=='sit_and_go' else '')+f'Mão #{i} · Sessão {session} · Mão {number}')
 
     def select_history(self, row):
         if row < 0 or row >= len(getattr(self, 'saved_hands', [])):
             return
         payload = self.saved_hands[row][3]
-        self.history_text.setPlainText('Cartas da mesa: ' + cards_text(payload['board']) + '\n\n' +
+        assisted_note=f"Esta mão teve estudo assistido em {len(payload.get('assistance',[]))} decisões.\n\n" if payload.get('assistance') else ''
+        self.history_text.setPlainText(assisted_note+'Cartas da mesa: ' + cards_text(payload['board']) + '\n\n' +
             readable_history(payload['history']) + '\n\nFichas ao terminar:\n' +
             '\n'.join(f"{p['name']}: {p['stack']} fichas | {cards_text(p['hole'])}" for p in payload['players']))
 
     def can_study(self):
+        tournament=getattr(self,'tournament_panel',None)
+        if tournament and tournament.evaluation_active:
+            return False
         return self.training_mode == 0 or self.session is None
 
     def open_visual_review(self):
@@ -446,9 +454,15 @@ class Window(QMainWindow):
         self.pages.setCurrentWidget(self.review_panel)
 
     def can_review(self):
+        if self.tournament_panel.evaluation_active:
+            return False
         return self.table.finished and (self.training_mode == 0 or self.session is None)
 
     def can_explain(self, analysis):
+        if self.tournament_panel.evaluation_active:
+            return False
+        if self.assistance_paused:
+            return False
         if self.training_mode == 1:
             return self.table.finished and self.session is None
         if self.table.finished:
@@ -458,11 +472,42 @@ class Window(QMainWindow):
         return snapshot(self.table, self.hero).model_dump(exclude={'id'}) == analysis.decision.model_dump(exclude={'id'})
 
     def ask_current_decision(self):
+        if self.assistance_paused:
+            return
         if self.table.actor != self.hero or self.training_mode != 0:
             return
         analysis = analyze(snapshot(self.table, self.hero))
         self.pages.setCurrentWidget(self.coach_panel)
         self.coach_panel.request_current(analysis)
+
+    def begin_assisted(self):
+        if self.assistance_paused or self.training_mode!=0 or self.table.finished or self.table.actor!=self.hero:
+            return
+        scenario=capture_assisted(self.table,self.hero)
+        analysis=analyze(snapshot(self.table,self.hero))
+        previous=self.assisted_analysis
+        if previous and previous.decision.model_dump(exclude={'id'})==analysis.decision.model_dump(exclude={'id'}):
+            analysis=previous
+        self.assisted_analysis=analysis
+        self.coach_panel.jobs.cancel()
+        self.equity_panel.jobs.cancel()
+        self.assistance_paused=True
+        dialog=AssistedDialog(self,scenario,analysis)
+        dialog.setAttribute(Qt.WA_DeleteOnClose,True)
+        self.assisted_dialog=dialog
+        self.refresh()
+        dialog.show()
+
+    def resume_assisted(self):
+        self.assistance_paused=False
+        self.assisted_dialog=None
+        if not self.closing:
+            self.refresh()
+
+    def record_assisted(self,scenario,result,decision_id):
+        if self.training_mode==0 and self.assistance_paused and result.scenario_id==scenario.id:
+            self.hand_assistance[decision_id]=dict(decision_id=decision_id,scenario=scenario.model_dump(mode='json'),
+                                                   result=result.model_dump(mode='json'))
 
     def review_saved_hand(self):
         if not self.can_review():
@@ -475,6 +520,8 @@ class Window(QMainWindow):
             self.pages.setCurrentWidget(self.coach_panel)
 
     def finish_training_session(self):
+        if self.tournament_panel.active:
+            return
         if not self.table.finished or self.session is None:
             return
         session = self.session
@@ -506,13 +553,21 @@ class Window(QMainWindow):
         QMessageBox.warning(self, 'PokerVision', message)
 
     def closeEvent(self, event):
-        if not self.table.finished:
-            answer = QMessageBox.question(self, 'Encerrar', 'A mão atual não foi concluída e não será salva. Encerrar?')
+        pending_sng=self.tournament_panel.active and not self.tournament_panel.table.finished
+        if not self.table.finished or pending_sng:
+            message=('A mão atual do Sit & Go será descartada. O torneio poderá ser retomado do último intervalo entre mãos. Encerrar?'
+                     if pending_sng else 'A mão atual não foi concluída e não será salva. Encerrar?')
+            answer = QMessageBox.question(self, 'Encerrar', message)
             if answer != QMessageBox.Yes:
                 event.ignore()
                 return
+        self.closing=True
         self.timer.stop()
+        if self.assisted_dialog:
+            self.assisted_dialog.shutdown()
+        self.tournament_panel.shutdown()
         self.coach_panel.shutdown()
+        self.equity_panel.shutdown()
         if self.session:
             self.repo.close_session(self.session)
         self.repo.close()
@@ -534,6 +589,8 @@ def style_app(app):
         QSpinBox,QComboBox { background:#1c2b3c; padding:9px; border:1px solid #3a5068; }
         QTextEdit,QTextBrowser,QListWidget { background:#131f2e; border:1px solid #2a3a4d; padding:8px; }
         QLabel { padding:5px; }
+        QTabBar::tab { background:#233549; color:#e6edf6; padding:9px; }
+        QTabBar::tab:selected { background:#31564d; }
     ''')
 
 

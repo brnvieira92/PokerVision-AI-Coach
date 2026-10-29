@@ -1,4 +1,4 @@
-# Treinamento — 0.3.0
+# Treinamento — 0.5.0
 
 ## Gabaritos
 
@@ -30,4 +30,34 @@ O revisor lê apenas decisions[].analysis.decision; não usa payload.board final
 
 A Avaliação bloqueia exercícios, ranges, progresso com perguntas anteriores e revisão até o encerramento da sessão. Na Aprendizagem, a revisão exige mão concluída; exercícios separados podem ser feitos sem abrir mesa. O guia básico de termos continua disponível.
 
-Visão computacional, currículo avançado e comparação de ranges por equity permanecem pendentes na Fase 3.
+Visão computacional e currículo estratégico avançado permanecem pendentes. A comparação de equity contra um range escolhido está disponível no laboratório, sem avaliar valor de apostas ou indicar ação ótima.
+
+
+## Novos cenários
+
+- Primeira aposta: posição inicial ou botão, seis jogadores, 100 BB, ninguém entrou. O enunciado declara um conjunto próprio e uma regra aumentar/desistir. Corrige aderência à regra, não uma solução GTO. Casos incluídos/excluídos são balanceados no gerador; isso não muda a distribuição de cartas da mesa jogável.
+- Blind maior: aposta obrigatória já colocada, um aumento e as demais pessoas desistiram. Calcula custo incremental e explica preço, sem afirmar que defender é a melhor jogada.
+- Flush: quatro cartas conhecidas de um naipe no flop e nenhuma carta adversária conhecida; 9 entre 47 completam o naipe na próxima carta. Não confundir essa probabilidade com vencer ou com as duas cartas restantes combinadas.
+
+## Equity e melhoria de categoria
+
+Cada simulação compara exatamente as melhores cinco cartas de cada jogador. Empate de dois jogadores vale meio pote. A categoria final só conta como melhoria quando é estritamente superior à inicial; melhora de kicker não conta. Ao explorar runouts, a UI rotula todos como hipóteses sorteadas e nunca importa cartas privadas alheias de uma mão salva.
+
+Um adversário de range é uniforme entre combinações físicas legais depois de remover cartas conhecidas. Isso preserva pesos 6/4/12 antes de blockers, em vez de sortear classes como se tivessem o mesmo peso. O laboratório é de um adversário; importar uma decisão com mais jogadores não preserva o número de oponentes, e essa simplificação é mostrada explicitamente.
+
+Faixa de amostragem: média das participações em [0,1], com raio sqrt(log(40)/(2N)) a partir da desigualdade de Hoeffding, limitado a [0,1]. Assume sorteios independentes sob o modelo; não valida o modelo de adversário. Referência matemática: [notas de probabilidade da CMU, desigualdade de Hoeffding](https://www.math.cmu.edu/~gautam/c/2026-425/notes/mgf.html).
+
+## Plano e períodos
+
+O plano seleciona três assuntos, priorizando menos de três respostas e depois o menor acerto suavizado nas últimas vinte. Cada bloco pede cinco respostas novas em relação à contagem salva na criação do plano. A meta é de prática e não de acertos; resultados continuam separados no dashboard. Regenerar o plano muda somente metas e contagens iniciais.
+
+O filtro de 7/30 dias usa janelas móveis e compara uma janela anterior com duração igual, sem sobreposição. Sem observações em qualquer lado, a mudança fica sem comparação, não zero. A diferença é em pontos percentuais, sem atribuição causal. A recomendação permanece baseada no histórico de treino completo para evitar mudar o currículo por um simples filtro de visualização.
+
+
+## Jogo assistido
+
+Ajuda exclusiva da mesa simulada em Aprendizagem, com pausa explícita antes da ação. Faz comparação contra todos os adversários ainda participando, sem consultar suas cartas privadas. Usa mãos uniformes ou um mesmo conjunto manual para todos, condicionado a cartas distintas. Exemplos mostram apenas boards possíveis, não as mãos adversárias reais ou sorteadas.
+
+As estimativas são condicionadas à política declarada de completar o preço atual sem raises/folds nem apostas futuras. Potes são formados a partir dessas contribuições hipotéticas; não devem ser confundidos com as fichas que já estavam no centro. All-ins limitam elegibilidade e podem criar vários potes. A equity contra todos e o recebimento médio de cada pote são medidas distintas. Nenhuma delas, sem hipótese de resposta às alternativas, prova a melhor ação.
+
+Empate multiway vale 1/k para equity. Recebimento por pote usa divisão inteira e ordem das sobras do motor, incluindo taxa e devoluções. A análise não usa resultado futuro para julgar a ação escolhida e não atribui uma nota de exercício a uma mão assistida.
